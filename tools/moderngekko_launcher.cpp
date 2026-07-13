@@ -26,6 +26,18 @@ namespace fs = std::filesystem;
 
 namespace
 {
+#ifndef MODERNGEKKO_FRONTEND_NAME
+#define MODERNGEKKO_FRONTEND_NAME "ModernGekko"
+#endif
+
+#ifndef MODERNGEKKO_RUNNER_FILENAME
+#define MODERNGEKKO_RUNNER_FILENAME "moderngekko-run"
+#endif
+
+#ifndef MODERNGEKKO_USER_DIRECTORY_NAME
+#define MODERNGEKKO_USER_DIRECTORY_NAME "moderngekko"
+#endif
+
 struct ExtractionState
 {
   std::atomic<bool> running{false};
@@ -47,10 +59,10 @@ struct DialogState
 fs::path DefaultUserDirectory()
 {
   if (const char* xdg = std::getenv("XDG_DATA_HOME"))
-    return fs::path(xdg) / "moderngekko";
+    return fs::path(xdg) / MODERNGEKKO_USER_DIRECTORY_NAME;
   if (const char* home = std::getenv("HOME"))
-    return fs::path(home) / ".local/share/moderngekko";
-  return "moderngekko-user";
+    return fs::path(home) / ".local/share" / MODERNGEKKO_USER_DIRECTORY_NAME;
+  return std::string(MODERNGEKKO_USER_DIRECTORY_NAME) + "-user";
 }
 
 fs::path DocumentsDirectory()
@@ -140,6 +152,11 @@ bool ExtractDisc(const fs::path& image, const fs::path& user_directory, Extracti
   std::string disc_id = volume->GetGameID(partition);
   if (disc_id.size() != 6)
     return fail("the selected image has an invalid disc ID");
+#ifdef MODERNGEKKO_REQUIRED_DISC_ID
+  if (disc_id != MODERNGEKKO_REQUIRED_DISC_ID)
+    return fail("this frontend requires disc ID " MODERNGEKKO_REQUIRED_DISC_ID "; selected " +
+                disc_id);
+#endif
   const fs::path games_directory = user_directory / "games";
   const fs::path output = games_directory / disc_id;
   if (moderngekko::InspectGame(output))
@@ -232,8 +249,8 @@ fs::path SiblingRunner(const char* argv0)
 {
   std::error_code ec;
   const fs::path self = fs::weakly_canonical(argv0, ec);
-  const fs::path sibling = self.parent_path() / "moderngekko-run";
-  return fs::is_regular_file(sibling) ? sibling : fs::path("moderngekko-run");
+  const fs::path sibling = self.parent_path() / MODERNGEKKO_RUNNER_FILENAME;
+  return fs::is_regular_file(sibling) ? sibling : fs::path(MODERNGEKKO_RUNNER_FILENAME);
 }
 }  // namespace
 
@@ -266,7 +283,8 @@ int main(int argc, char** argv)
   auto config = moderngekko::frontend::LoadConfig(user_directory, true);
   if (!config)
   {
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Invalid ModernGekko config.ini",
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                             "Invalid " MODERNGEKKO_FRONTEND_NAME " config.ini",
                              config.error.c_str(), nullptr);
     return 2;
   }
@@ -280,7 +298,7 @@ int main(int argc, char** argv)
 
   const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
   SDL_Window* window = SDL_CreateWindow(
-      "ModernGekko", static_cast<int>(820 * scale), static_cast<int>(560 * scale),
+      MODERNGEKKO_FRONTEND_NAME, static_cast<int>(820 * scale), static_cast<int>(560 * scale),
       SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
   if (!window)
   {
@@ -362,10 +380,10 @@ int main(int argc, char** argv)
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::Begin("ModernGekko Launcher", nullptr,
+    ImGui::Begin(MODERNGEKKO_FRONTEND_NAME " Launcher", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted("ModernGekko");
+    ImGui::TextUnformatted(MODERNGEKKO_FRONTEND_NAME);
     ImGui::Separator();
 
     if (current_metadata)
@@ -462,7 +480,9 @@ int main(int argc, char** argv)
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextWrapped("Controller: %s", controller_status.c_str());
+#ifdef MODERNGEKKO_FORCE_SIDEWAYS_WIIMOTE
     ImGui::TextDisabled("Forced profile: Sideways Wii Remote, Extension: None");
+#endif
     ImGui::End();
 
     ImGui::Render();
@@ -487,7 +507,8 @@ int main(int argc, char** argv)
   std::string error;
   if (!WriteDefaultGame(user_directory, current_game, &error))
     return 1;
-  std::string command = Quote(SiblingRunner(argv[0])) + " --game " + Quote(current_game);
+  std::string command = Quote(SiblingRunner(argv[0])) + " --game " + Quote(current_game) +
+                        " --user-dir " + Quote(user_directory);
   if (use_x11)
     command += " -X11";
   return std::system(command.c_str()) == 0 ? 0 : 1;

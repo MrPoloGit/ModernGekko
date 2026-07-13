@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -54,6 +55,9 @@ std::optional<fs::path> FindDolphinControllerConfig()
 
 std::string NormalizeController(std::istream& input)
 {
+#ifndef MODERNGEKKO_FORCE_SIDEWAYS_WIIMOTE
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+#else
   std::vector<std::string> wiimote;
   bool in_wiimote_one = false;
   std::string line;
@@ -91,6 +95,7 @@ std::string NormalizeController(std::istream& input)
             "[Wiimote4]\n"
             "[BalanceBoard]\n";
   return output.str();
+#endif
 }
 }  // namespace
 
@@ -223,7 +228,11 @@ bool ImportDolphinController(const fs::path& user_directory, std::string* messag
   }
   output << normalized;
   if (message)
+#ifdef MODERNGEKKO_FORCE_SIDEWAYS_WIIMOTE
     *message = "imported " + source->string() + " as Sideways Wii Remote (no extension)";
+#else
+    *message = "imported " + source->string();
+#endif
   return true;
 }
 }  // namespace moderngekko::frontend

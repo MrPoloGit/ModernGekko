@@ -14,6 +14,14 @@
 
 namespace
 {
+#ifndef MODERNGEKKO_RUNNER_NAME
+#define MODERNGEKKO_RUNNER_NAME "moderngekko-run"
+#endif
+
+#ifndef MODERNGEKKO_USER_DIRECTORY_NAME
+#define MODERNGEKKO_USER_DIRECTORY_NAME "moderngekko"
+#endif
+
 volatile std::sig_atomic_t s_stop_requested = 0;
 
 void HandleStopSignal(int)
@@ -23,10 +31,11 @@ void HandleStopSignal(int)
 
 void Usage()
 {
-  std::cerr << "usage: moderngekko-run [--game <extracted-root>] [--module <path>]\n"
-               "                       [--user-dir <path>] [--title <text>]\n"
-               "                       [--graphics <backend>] [--audio <backend>]\n"
-               "                       [-X11] [--headless] [--allow-interpreter]\n"
+  std::cerr << "usage: " MODERNGEKKO_RUNNER_NAME
+               " [--game <extracted-root>] [--module <path>]\n"
+               "       [--user-dir <path>] [--title <text>]\n"
+               "       [--graphics <backend>] [--audio <backend>]\n"
+               "       [-X11] [--headless] [--allow-interpreter]\n"
                "       With no --game, boots the path in <user-dir>/default-game.txt.\n";
 }
 
@@ -43,10 +52,11 @@ std::filesystem::path ReadDefaultGame(const std::filesystem::path& user_director
 std::filesystem::path DefaultUserDirectory()
 {
   if (const char* xdg = std::getenv("XDG_DATA_HOME"))
-    return std::filesystem::path(xdg) / "moderngekko";
+    return std::filesystem::path(xdg) / MODERNGEKKO_USER_DIRECTORY_NAME;
   if (const char* home = std::getenv("HOME"))
-    return std::filesystem::path(home) / ".local" / "share" / "moderngekko";
-  return "moderngekko-user";
+    return std::filesystem::path(home) / ".local" / "share" /
+           MODERNGEKKO_USER_DIRECTORY_NAME;
+  return std::string(MODERNGEKKO_USER_DIRECTORY_NAME) + "-user";
 }
 
 std::string LibrarySuffix()
@@ -59,12 +69,29 @@ std::string LibrarySuffix()
   return ".so";
 #endif
 }
+
+std::filesystem::path ExecutableDirectory(const char* argv0)
+{
+  std::error_code ec;
+#if defined(__linux__)
+  const std::filesystem::path proc_executable =
+      std::filesystem::read_symlink("/proc/self/exe", ec);
+  if (!ec)
+    return proc_executable.parent_path();
+  ec.clear();
+#endif
+  const std::filesystem::path executable = std::filesystem::weakly_canonical(argv0, ec);
+  return ec ? std::filesystem::current_path() : executable.parent_path();
+}
 }  // namespace
 
 int main(int argc, char** argv)
 {
   moderngekko::RuntimeConfig config;
   config.user_directory = DefaultUserDirectory();
+#ifdef MODERNGEKKO_DEFAULT_WINDOW_TITLE
+  config.window_title = MODERNGEKKO_DEFAULT_WINDOW_TITLE;
+#endif
   std::filesystem::path module_path;
   for (int i = 1; i < argc; ++i)
   {
@@ -144,6 +171,15 @@ int main(int argc, char** argv)
     return 2;
   }
 
+#ifdef MODERNGEKKO_REQUIRED_DISC_ID
+  if (inspected.metadata->disc_id != MODERNGEKKO_REQUIRED_DISC_ID)
+  {
+    std::cerr << "unsupported disc ID: expected " << MODERNGEKKO_REQUIRED_DISC_ID << ", got "
+              << inspected.metadata->disc_id << '\n';
+    return 2;
+  }
+#endif
+
   // Compatibility discovery belongs to the runner, never the runtime library.
   if (module_path.empty())
   {
@@ -151,10 +187,14 @@ int main(int argc, char** argv)
       module_path = env;
     else
     {
-      const auto candidate = config.user_directory / "StaticRecompModules" /
-                             ("g" + inspected.metadata->disc_id + "_recomp" + LibrarySuffix());
-      if (std::filesystem::is_regular_file(candidate))
-        module_path = candidate;
+      const std::string module_name =
+          "g" + inspected.metadata->disc_id + "_recomp" + LibrarySuffix();
+      const auto bundled = ExecutableDirectory(argv[0]) / module_name;
+      const auto user_module = config.user_directory / "StaticRecompModules" / module_name;
+      if (std::filesystem::is_regular_file(bundled))
+        module_path = bundled;
+      else if (std::filesystem::is_regular_file(user_module))
+        module_path = user_module;
     }
   }
   if (!module_path.empty())

@@ -33,6 +33,7 @@ if(MODERNGEKKO_FRONTEND_SDK)
     list(PREPEND CMAKE_PREFIX_PATH "${_moderngekko_sdk_usr}")
     list(PREPEND CMAKE_INCLUDE_PATH "${_moderngekko_sdk_usr}/include")
     list(PREPEND CMAKE_LIBRARY_PATH "${_moderngekko_sdk_lib}")
+    link_directories("${_moderngekko_sdk_lib}")
 
     set(_moderngekko_pkgconfig
         "${_moderngekko_sdk_lib}/pkgconfig:${_moderngekko_sdk_usr}/share/pkgconfig")
@@ -67,6 +68,8 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     set(ENABLE_HWDB OFF CACHE BOOL "" FORCE)
     set(ENABLE_EVDEV OFF CACHE BOOL "" FORCE)
     set(ENABLE_WAYLAND ON CACHE BOOL "" FORCE)
+    set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
+    set(USE_SYSTEM_SDL3 OFF CACHE BOOL "" FORCE)
     set(LINUX_LOCAL_DEV ON CACHE BOOL "" FORCE)
     set(DISTRIBUTOR "ModernGekko" CACHE STRING "" FORCE)
     add_subdirectory(vendor/dolphin EXCLUDE_FROM_ALL)
@@ -295,11 +298,6 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     if(MODERNGEKKO_FRONTEND_SDK)
         set_property(TARGET moderngekko-run PROPERTY BUILD_RPATH
             "${_moderngekko_sdk_lib}")
-        if(EXISTS "${_moderngekko_sdk_lib}/libsndio.so.7")
-            target_link_libraries(moderngekko-run PRIVATE
-                "-Wl,--no-as-needed" "${_moderngekko_sdk_lib}/libsndio.so.7"
-                "-Wl,--as-needed")
-        endif()
     endif()
     target_link_libraries(moderngekko-run PRIVATE ModernGekko::Runtime)
     add_custom_command(TARGET moderngekko-run POST_BUILD
@@ -316,36 +314,41 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         "${CMAKE_CURRENT_SOURCE_DIR}/tools"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/backends")
-    if(TARGET SDL3::SDL3-shared)
+    if(TARGET SDL3-static)
+        set(_moderngekko_sdl_target SDL3-static)
+    elseif(TARGET SDL3::SDL3-shared)
         set(_moderngekko_sdl_target SDL3::SDL3-shared)
     elseif(TARGET SDL3::SDL3)
         set(_moderngekko_sdl_target SDL3::SDL3)
-    elseif(TARGET SDL3-static)
-        set(_moderngekko_sdl_target SDL3-static)
     else()
         message(FATAL_ERROR "No usable SDL3 target is available for the launcher")
     endif()
-    target_link_libraries(moderngekko-launcher PRIVATE
-        ModernGekko::Runtime discio imgui ${_moderngekko_sdl_target})
+    # The launcher only calls the game-inspection surface directly, but the
+    # Dolphin static libraries still require the Host_* callbacks implemented
+    # in the runtime object. Keep that object from being discarded by the
+    # static linker.
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+        target_link_libraries(moderngekko-launcher PRIVATE
+            "$<LINK_LIBRARY:WHOLE_ARCHIVE,moderngekko>"
+            discio imgui ${_moderngekko_sdl_target})
+    elseif(UNIX AND NOT APPLE)
+        target_link_libraries(moderngekko-launcher PRIVATE
+            "-Wl,--whole-archive" moderngekko "-Wl,--no-whole-archive"
+            discio imgui ${_moderngekko_sdl_target})
+    else()
+        target_link_libraries(moderngekko-launcher PRIVATE
+            ModernGekko::Runtime discio imgui ${_moderngekko_sdl_target})
+    endif()
+    set_target_properties(moderngekko-launcher PROPERTIES OUTPUT_NAME "ModernGekko")
     if(MODERNGEKKO_FRONTEND_SDK)
         set_property(TARGET moderngekko-launcher PROPERTY BUILD_RPATH
             "${_moderngekko_sdk_lib}")
-        # SDL's distro build has an optional sndio dependency that is not installed
-        # globally on the development host. Keep it as a direct dependency so the
-        # launcher's build rpath also resolves it.
-        if(EXISTS "${_moderngekko_sdk_lib}/libsndio.so.7")
-            target_link_libraries(moderngekko-launcher PRIVATE
-                "-Wl,--no-as-needed" "${_moderngekko_sdk_lib}/libsndio.so.7"
-                "-Wl,--as-needed")
-        endif()
+    endif()
+    if(UNIX AND NOT APPLE)
+        set_target_properties(moderngekko-run moderngekko-launcher PROPERTIES
+            INSTALL_RPATH "$ORIGIN/lib")
     endif()
     add_dependencies(moderngekko-launcher moderngekko-run)
-    add_custom_command(TARGET moderngekko-launcher POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E rm -f
-                "$<TARGET_FILE_DIR:moderngekko-launcher>/ModernGekko"
-        COMMAND ${CMAKE_COMMAND} -E create_symlink
-                "$<TARGET_FILE_NAME:moderngekko-launcher>"
-                "$<TARGET_FILE_DIR:moderngekko-launcher>/ModernGekko")
 
     add_executable(moderngekko-port tools/moderngekko_port.cpp)
     target_link_libraries(moderngekko-port PRIVATE ModernGekko::Runtime)
