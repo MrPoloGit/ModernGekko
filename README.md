@@ -3,8 +3,11 @@
 A runtime for GameCube/Wii recomps.
 
 ## Credits
+
 SpecialK / aharonahdoot - RecompCore
+
 The Dolphin Team - Foundation of this repo
+
 Literally God / MrPoloGit - Making the Recomp template and adding MacOS support
 
 Please contact me if your name is missing and you contributed something!
