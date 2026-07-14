@@ -4,7 +4,7 @@ A runtime for GameCube/Wii recomps.
 
 ## Credits
 
-SpecialK / aharonahdoot - RecompCore
+SpecialK / aharonahdoot - RecompCore (referenced heavily)
 
 The Dolphin Team - Foundation of this repo
 
