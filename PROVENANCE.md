@@ -8,7 +8,7 @@ is in `LICENSE`.
 The Dolphin-derived runtime is pinned as the `vendor/dolphin` submodule:
 
 - Repository: `https://github.com/ExpansionPak/RecompCore.git`
-- RecompCore revision: `7ddd35f37313236819cda798ae882abe1efcde74`
+- RecompCore revision: `6ed835397d984f2ac8cccb89589ef592add68d71`
 - Branch used for local integration: `moderngekko-runtime`
 - Dolphin base immediately before StaticRecomp was introduced:
   `1ccbcaa04a95a5807d92429bf35598da345a3f16`
@@ -29,15 +29,18 @@ retained in their source trees.
 
 ModernGekko-owned integration is intentionally kept in the top-level runtime,
 frontend, tooling, tests, and build files. The RecompCore integration branch
-contains two local commits beyond `ExpansionPak/RecompCore` main:
+contains three local commits beyond `ExpansionPak/RecompCore` main:
 
 - `0fafb0f796` (`support moderngekko runtime`): explicit module-source wiring,
   StaticRecomp ABI/loader integration, Wayland NoGUI support, Vulkan surface
   support, and generated-module build fixes.
 - `7ddd35f373` (`fix standalone frontend build`): standalone SDL target export,
   static frontend dependency handling, and native Wayland configuration.
+- `6ed835397d` (`speed up generated dispatch`): indexed generated dispatch,
+  physical PC alias handling, and module-table parsing for compact dispatch runs.
 
 No Nintendo disc image, extracted game data, keys, or copyrighted game assets
 are part of either source repository. Users and testers provide their own game
 dump.
+
 Note: written by Codex. Rewrite this soon

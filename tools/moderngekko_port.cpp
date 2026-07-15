@@ -19,7 +19,9 @@ namespace fs = std::filesystem;
 
 namespace
 {
-constexpr std::string_view RECOMPCORE_REVISION = "42a6bb23db8510fbcd34184bb54aa5679b05dd9b";
+constexpr std::string_view RECOMPCORE_REVISION = "6ed835397d984f2ac8cccb89589ef592add68d71";
+constexpr std::string_view DOLRECOMP_REVISION =
+    "a2b02e5a515fc8971cc551ad51c9e26a9815daad-dispatch-port";
 
 struct BuildOptions
 {
@@ -235,7 +237,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
     flags = "compile:/O2 /fp:strict";
   }
   const std::string identity = std::string(RECOMPCORE_REVISION) + "|dolrecomp=" +
-      std::string(RECOMPCORE_REVISION) + "|module-abi=" +
+      std::string(DOLRECOMP_REVISION) + "|module-abi=" +
       std::to_string(MODERNGEKKO_MODULE_ABI_VERSION) + "|cpu-abi=" +
       std::to_string(MODERNGEKKO_CPU_ABI_VERSION) + "|" + compiler_identity + "|" +
       std::string(architecture) + "|" + flags;
@@ -261,9 +263,11 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
     std::ofstream manifest(artifact / "manifest.txt");
     manifest << "disc_id=" << game.disc_id << '\n' << "dol_sha256=" << game.dol_sha256 << '\n'
              << "recompcore_revision=" << RECOMPCORE_REVISION << '\n'
+             << "dolrecomp_revision=" << DOLRECOMP_REVISION << '\n'
              << "module_abi=" << MODERNGEKKO_MODULE_ABI_VERSION << '\n'
              << "cpu_abi=" << MODERNGEKKO_CPU_ABI_VERSION << '\n'
-             << "compiler=" << compiler_identity << "architecture=" << architecture << '\n'
+             << "compiler=" << compiler_identity << '\n'
+             << "architecture=" << architecture << '\n'
              << "flags=" << flags << '\n';
     fs::create_directories(options.output / game.disc_id);
     std::ofstream active(options.output / game.disc_id / "active-module.txt");
