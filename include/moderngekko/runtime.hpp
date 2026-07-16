@@ -61,6 +61,7 @@ struct RuntimeConfig
   WindowSystem window_system = WindowSystem::Default;
   bool headless = false;
   bool allow_interpreter = false;
+  bool show_fps_in_title = true;
   std::optional<std::string> window_title;
 };
 

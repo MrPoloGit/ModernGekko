@@ -154,6 +154,7 @@ int main(int argc, char** argv)
     return 2;
   }
   config.graphics.internal_resolution_scale = frontend_config.dolphin_scale;
+  config.show_fps_in_title = frontend_config.show_fps_in_title;
 
   std::string controller_message;
   if (!moderngekko::frontend::ImportDolphinController(config.user_directory,

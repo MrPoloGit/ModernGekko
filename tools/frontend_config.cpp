@@ -115,7 +115,7 @@ ConfigResult LoadConfig(const fs::path& user_directory, bool create_if_missing)
   if (!fs::exists(path) && create_if_missing)
   {
     std::string error;
-    if (!SaveConfig(user_directory, "1920x1080", &error))
+    if (!SaveConfig(user_directory, "1920x1080", true, &error))
       return {.error = std::move(error)};
   }
 
@@ -124,6 +124,7 @@ ConfigResult LoadConfig(const fs::path& user_directory, bool create_if_missing)
     return {.error = "can't open " + path.string()};
 
   std::string resolution;
+  bool show_fps_in_title = true;
   std::string line;
   while (std::getline(file, line))
   {
@@ -135,8 +136,19 @@ ConfigResult LoadConfig(const fs::path& user_directory, bool create_if_missing)
     const std::size_t separator = trimmed.find('=');
     if (separator == std::string::npos)
       return {.error = "invalid config.ini line: " + trimmed};
-    if (Lower(Trim(trimmed.substr(0, separator))) == "resolution")
-      resolution = Lower(Trim(trimmed.substr(separator + 1)));
+    const std::string key = Lower(Trim(trimmed.substr(0, separator)));
+    const std::string value = Lower(Trim(trimmed.substr(separator + 1)));
+    if (key == "resolution")
+      resolution = value;
+    else if (key == "show_fps_in_title")
+    {
+      if (value == "true" || value == "1" || value == "yes" || value == "on")
+        show_fps_in_title = true;
+      else if (value == "false" || value == "0" || value == "no" || value == "off")
+        show_fps_in_title = false;
+      else
+        return {.error = "show_fps_in_title must be true or false"};
+    }
   }
   if (resolution.empty())
     return {.error = "config.ini is missing resolution=<width>x<height>"};
@@ -144,7 +156,9 @@ ConfigResult LoadConfig(const fs::path& user_directory, bool create_if_missing)
   for (const ResolutionOption& option : SupportedResolutions())
   {
     if (resolution == option.text)
-      return {.dolphin_scale = option.dolphin_scale, .resolution = std::move(resolution)};
+      return {.dolphin_scale = option.dolphin_scale,
+              .resolution = std::move(resolution),
+              .show_fps_in_title = show_fps_in_title};
   }
 
   // Dolphin also accepts exact raw EFB multiples even when they do not have a common display label.
@@ -152,14 +166,17 @@ ConfigResult LoadConfig(const fs::path& user_directory, bool create_if_missing)
   {
     const std::string raw = std::to_string(640 * scale) + "x" + std::to_string(528 * scale);
     if (resolution == raw)
-      return {.dolphin_scale = scale, .resolution = std::move(resolution)};
+      return {.dolphin_scale = scale,
+              .resolution = std::move(resolution),
+              .show_fps_in_title = show_fps_in_title};
   }
 
   return {.error = "unsupported Dolphin internal resolution '" + resolution +
                    "'; use a listed display resolution or an exact 640x528 multiple up to 12x"};
 }
 
-bool SaveConfig(const fs::path& user_directory, std::string_view resolution, std::string* error)
+bool SaveConfig(const fs::path& user_directory, std::string_view resolution,
+                bool show_fps_in_title, std::string* error)
 {
   std::error_code ec;
   fs::create_directories(user_directory, ec);
@@ -179,7 +196,8 @@ bool SaveConfig(const fs::path& user_directory, std::string_view resolution, std
   file << "# ModernGekko frontend settings\n"
           "# This is Dolphin's internal render target, not the window size.\n"
           "[Video]\n"
-          "resolution=" << resolution << '\n';
+          "resolution=" << resolution << '\n'
+       << "show_fps_in_title=" << (show_fps_in_title ? "true" : "false") << '\n';
   return true;
 }
 

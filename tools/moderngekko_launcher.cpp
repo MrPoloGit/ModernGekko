@@ -336,6 +336,7 @@ int main(int argc, char** argv)
   fs::path current_game = ReadDefaultGame(user_directory);
   auto current_metadata = moderngekko::InspectGame(current_game);
   const auto& resolutions = moderngekko::frontend::SupportedResolutions();
+  bool show_fps_in_title = config.show_fps_in_title;
   int resolution_index = 0;
   for (std::size_t i = 0; i < resolutions.size(); ++i)
   {
@@ -413,7 +414,8 @@ int main(int argc, char** argv)
         if (ImGui::Selectable(resolutions[i].text, selected))
         {
           std::string error;
-          if (moderngekko::frontend::SaveConfig(user_directory, resolutions[i].text, &error))
+          if (moderngekko::frontend::SaveConfig(user_directory, resolutions[i].text,
+                                                show_fps_in_title, &error))
             resolution_index = static_cast<int>(i);
           else
           {
@@ -423,6 +425,19 @@ int main(int argc, char** argv)
         }
       }
       ImGui::EndCombo();
+    }
+    const bool previous_show_fps_in_title = show_fps_in_title;
+    if (ImGui::Checkbox("Show FPS in window title", &show_fps_in_title))
+    {
+      std::string error;
+      if (!moderngekko::frontend::SaveConfig(user_directory,
+                                             resolutions[resolution_index].text,
+                                             show_fps_in_title, &error))
+      {
+        show_fps_in_title = previous_show_fps_in_title;
+        std::lock_guard lock(dialog.mutex);
+        dialog.error = std::move(error);
+      }
     }
     ImGui::Spacing();
     ImGui::TextUnformatted("Wii disc image");

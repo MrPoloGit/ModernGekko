@@ -15,12 +15,17 @@
 #include "Core/System.h"
 #include "DolphinNoGUI/Platform.h"
 #include "UICommon/UICommon.h"
+#include "VideoCommon/PerformanceMetrics.h"
 #include "moderngekko/cpu_state.h"
 #include "moderngekko/module_loader.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
+#include <fmt/format.h>
 #include <mutex>
+#include <thread>
 #include <utility>
 
 namespace
@@ -32,6 +37,14 @@ std::mutex s_runtime_mutex;
 bool s_runtime_active = false;
 Platform* s_platform = nullptr;
 std::string s_window_title;
+bool s_show_fps_in_title = true;
+
+std::string FormatWindowTitle(const std::string& title, double fps)
+{
+  if (!std::isfinite(fps) || fps < 0.0)
+    fps = 0.0;
+  return fmt::format("{} | {:.1f} FPS", title, fps);
+}
 }
 
 std::vector<std::string> Host_GetPreferredLocales() { return {}; }
@@ -45,8 +58,14 @@ void Host_Message(HostMessageID id)
 }
 void Host_UpdateTitle(const std::string&)
 {
-  if (s_platform)
-    s_platform->SetTitle(s_window_title);
+  if (!s_platform)
+    return;
+
+  std::string title = s_window_title;
+  if (s_show_fps_in_title &&
+      s_platform->GetWindowSystemInfo().type != WindowSystemType::Headless)
+    title = FormatWindowTitle(title, Core::System::GetInstance().GetPerfMetrics().GetFPS());
+  s_platform->SetTitle(title);
 }
 void Host_UpdateDisasmDialog() {}
 void Host_JitCacheInvalidation() {}
@@ -203,6 +222,7 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config)
   s_runtime_active = true;
   s_platform = impl->platform.get();
   s_window_title = impl->title;
+  s_show_fps_in_title = impl->config.show_fps_in_title;
   return {std::unique_ptr<Runtime>(new Runtime(std::move(impl))), {}};
 }
 
@@ -222,6 +242,7 @@ Runtime::~Runtime()
   std::lock_guard lock(s_runtime_mutex);
   s_platform = nullptr;
   s_window_title.clear();
+  s_show_fps_in_title = true;
   s_runtime_active = false;
 }
 
@@ -250,7 +271,22 @@ RuntimeRunResult Runtime::Run()
             RuntimeError{RuntimeErrorCode::BootFailed, "Dolphin could not boot sys/main.dol"}};
   }
   m_impl->booted = true;
+  std::jthread title_thread;
+  if (!m_impl->config.headless && m_impl->config.show_fps_in_title)
+  {
+    title_thread = std::jthread([](std::stop_token stop_token) {
+      while (!stop_token.stop_requested())
+      {
+        Host_UpdateTitle({});
+        for (int i = 0; i < 10 && !stop_token.stop_requested(); ++i)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    });
+  }
   m_impl->platform->MainLoop();
+  title_thread.request_stop();
+  if (title_thread.joinable())
+    title_thread.join();
   m_impl->platform->SaveWindowGeometry();
   Core::Stop(Core::System::GetInstance());
   Core::Shutdown(Core::System::GetInstance());
