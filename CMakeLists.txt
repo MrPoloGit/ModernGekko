@@ -69,7 +69,7 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     set(ENCODE_FRAMEDUMPS OFF CACHE BOOL "" FORCE)
     set(ENABLE_LLVM OFF CACHE BOOL "" FORCE)
     # Cubeb is Dolphin's only audio backend on macOS
-    if(APPLE)
+    if(APPLE OR WIN32)
         set(ENABLE_CUBEB ON CACHE BOOL "" FORCE)
     else()
         set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
@@ -198,6 +198,11 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         vendor/dolphin/Source/Core/DolphinNoGUI/Platform.cpp
         vendor/dolphin/Source/Core/DolphinNoGUI/PlatformHeadless.cpp
     )
+    if(WIN32)
+        target_sources(moderngekko PRIVATE
+            vendor/dolphin/Source/Core/DolphinNoGUI/PlatformWin32.cpp)
+        target_link_libraries(moderngekko PRIVATE dwmapi)
+    endif()
     if(APPLE)
         # Dolphin's windowed backend for macOS
         target_sources(moderngekko PRIVATE
@@ -347,14 +352,46 @@ target_link_libraries(moderngekko-module-info
 )
 
 if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
-    add_executable(moderngekko-run tools/moderngekko_run.cpp)
-    target_sources(moderngekko-run PRIVATE tools/frontend_config.cpp)
-    target_include_directories(moderngekko-run PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    if(TARGET SDL3-static)
+        set(_moderngekko_sdl_target SDL3-static)
+    elseif(TARGET SDL3::SDL3-shared)
+        set(_moderngekko_sdl_target SDL3::SDL3-shared)
+    elseif(TARGET SDL3::SDL3)
+        set(_moderngekko_sdl_target SDL3::SDL3)
+    else()
+        message(FATAL_ERROR "No usable SDL3 target is available for the frontend")
+    endif()
+    add_executable(moderngekko-run
+        tools/moderngekko_run.cpp
+        tools/netplay_compatibility.cpp
+        tools/netplay_session.cpp
+        tools/frontend_config.cpp
+        vendor/dolphin/Externals/imgui/imgui/backends/imgui_impl_sdl3.cpp
+        vendor/dolphin/Externals/imgui/imgui/backends/imgui_impl_sdlrenderer3.cpp)
+    target_include_directories(moderngekko-run PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/GXRuntime/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/backends")
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        target_compile_definitions(moderngekko-run PRIVATE _ARCH_64=1)
+    else()
+        target_compile_definitions(moderngekko-run PRIVATE _ARCH_32=1)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x64|x86_64|amd64|AMD64")
+        target_compile_definitions(moderngekko-run PRIVATE _M_X86_64=1)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        target_compile_definitions(moderngekko-run PRIVATE _M_ARM_64=1)
+    else()
+        target_compile_definitions(moderngekko-run PRIVATE _M_GENERIC=1)
+    endif()
     if(MODERNGEKKO_FRONTEND_SDK)
         set_property(TARGET moderngekko-run PROPERTY BUILD_RPATH
             "${_moderngekko_sdk_lib}")
     endif()
-    target_link_libraries(moderngekko-run PRIVATE ModernGekko::Runtime)
+    target_link_libraries(moderngekko-run PRIVATE
+        ModernGekko::Runtime core uicommon imgui ${_moderngekko_sdl_target})
     add_custom_command(TARGET moderngekko-run POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Data/Sys"
@@ -369,20 +406,14 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
         "${CMAKE_CURRENT_SOURCE_DIR}/tools"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Externals/imgui/imgui/backends")
-    if(TARGET SDL3-static)
-        set(_moderngekko_sdl_target SDL3-static)
-    elseif(TARGET SDL3::SDL3-shared)
-        set(_moderngekko_sdl_target SDL3::SDL3-shared)
-    elseif(TARGET SDL3::SDL3)
-        set(_moderngekko_sdl_target SDL3::SDL3)
-    else()
-        message(FATAL_ERROR "No usable SDL3 target is available for the launcher")
-    endif()
     # The launcher only calls the game-inspection surface directly, but the
     # Dolphin static libraries still require the Host_* callbacks implemented
     # in the runtime object. Keep that object from being discarded by the
     # static linker.
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    if(MINGW)
+        target_link_libraries(moderngekko-launcher PRIVATE
+            ModernGekko::Runtime discio imgui ${_moderngekko_sdl_target})
+    elseif(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
         target_link_libraries(moderngekko-launcher PRIVATE
             "$<LINK_LIBRARY:WHOLE_ARCHIVE,moderngekko>"
             discio imgui ${_moderngekko_sdl_target})
@@ -424,6 +455,42 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/tools")
     target_compile_features(moderngekko_frontend_config_test PRIVATE cxx_std_23)
     add_test(NAME moderngekko.frontend_config COMMAND moderngekko_frontend_config_test)
+
+    if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
+        add_executable(moderngekko_netplay_protocol_test
+            tests/netplay_protocol_test.cpp
+            tools/netplay_compatibility.cpp)
+        target_include_directories(moderngekko_netplay_protocol_test PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/GXRuntime/include")
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            target_compile_definitions(moderngekko_netplay_protocol_test PRIVATE _ARCH_64=1)
+        else()
+            target_compile_definitions(moderngekko_netplay_protocol_test PRIVATE _ARCH_32=1)
+        endif()
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x64|x86_64|amd64|AMD64")
+            target_compile_definitions(moderngekko_netplay_protocol_test PRIVATE _M_X86_64=1)
+        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+            target_compile_definitions(moderngekko_netplay_protocol_test PRIVATE _M_ARM_64=1)
+        else()
+            target_compile_definitions(moderngekko_netplay_protocol_test PRIVATE _M_GENERIC=1)
+        endif()
+        if(MINGW)
+            target_link_libraries(moderngekko_netplay_protocol_test PRIVATE
+                "-Wl,--whole-archive" moderngekko "-Wl,--no-whole-archive" core uicommon)
+        elseif(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+            target_link_libraries(moderngekko_netplay_protocol_test PRIVATE
+                "$<LINK_LIBRARY:WHOLE_ARCHIVE,moderngekko>" core uicommon)
+        elseif(UNIX AND NOT APPLE)
+            target_link_libraries(moderngekko_netplay_protocol_test PRIVATE
+                "-Wl,--whole-archive" moderngekko "-Wl,--no-whole-archive" core uicommon)
+        else()
+            target_link_libraries(moderngekko_netplay_protocol_test PRIVATE
+                ModernGekko::Runtime core uicommon)
+        endif()
+        add_test(NAME moderngekko.netplay_protocol COMMAND moderngekko_netplay_protocol_test)
+    endif()
 
     add_executable(moderngekko_game_inspect_test tests/game_inspect_test.cpp)
     target_link_libraries(moderngekko_game_inspect_test PRIVATE ModernGekko::LegacyRuntime)

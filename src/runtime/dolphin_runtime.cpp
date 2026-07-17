@@ -5,11 +5,12 @@
 #include "Common/HookableEvent.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Boot/BootManager.h"
-#include "Core/Config/MainSettings.h"
 #include "Core/Config/GraphicsSettings.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
-#include "Core/Host.h"
 #include "Core/HW/GBACore.h"
+#include "Core/Host.h"
+#include "Core/NetPlay/NetPlayClient.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompModuleSource.h"
@@ -17,6 +18,8 @@
 #include "DolphinNoGUI/Platform.h"
 #include "UICommon/UICommon.h"
 #include "VideoCommon/PerformanceMetrics.h"
+#include "VideoCommon/VideoConfig.h"
+#include "dolphin_runtime_internal.hpp"
 #include "moderngekko/cpu_state.h"
 #include "moderngekko/module_loader.hpp"
 
@@ -30,71 +33,103 @@
 #include <thread>
 #include <utility>
 
-namespace
-{
+namespace {
 static_assert(sizeof(ModernGekkoModuleDesc) == sizeof(StaticRecompModuleDesc));
 static_assert(offsetof(ModernGekkoModuleDesc, chunk_hashes) ==
               offsetof(StaticRecompModuleDesc, chunk_hashes));
 std::mutex s_runtime_mutex;
 bool s_runtime_active = false;
-Platform* s_platform = nullptr;
+Platform *s_platform = nullptr;
 std::string s_window_title;
 bool s_show_fps_in_title = true;
+bool s_external_ui_common = false;
+std::unique_ptr<BootSessionData> s_boot_session_data;
+u64 s_previous_net_wait_ns = 0;
+double s_net_wait_ms_per_second = 0.0;
+std::chrono::steady_clock::time_point s_previous_net_wait_sample;
 
-std::string FormatWindowTitle(const std::string& title, double fps)
-{
+std::string FormatWindowTitle(const std::string &title, double fps) {
   if (!std::isfinite(fps) || fps < 0.0)
     fps = 0.0;
-  return fmt::format("{} | {:.1f} FPS", title, fps);
+  const auto now = std::chrono::steady_clock::now();
+  std::string formatted_title = fmt::format("{} | {:.1f} FPS", title, fps);
+  const NetPlay::InputWaitTelemetry telemetry =
+      NetPlay::NetPlayClient::GetInputWaitTelemetry();
+  if (!telemetry.active) {
+    s_previous_net_wait_ns = 0;
+    s_net_wait_ms_per_second = 0.0;
+    s_previous_net_wait_sample = {};
+    return formatted_title;
+  }
+  if (s_previous_net_wait_sample.time_since_epoch().count() == 0) {
+    s_previous_net_wait_sample = now;
+    s_previous_net_wait_ns = telemetry.total_wait_ns;
+  } else if (telemetry.total_wait_ns < s_previous_net_wait_ns) {
+    s_previous_net_wait_sample = now;
+    s_previous_net_wait_ns = telemetry.total_wait_ns;
+    s_net_wait_ms_per_second = 0.0;
+  } else if (now - s_previous_net_wait_sample >=
+             std::chrono::milliseconds(500)) {
+    const double seconds =
+        std::chrono::duration<double>(now - s_previous_net_wait_sample).count();
+    s_net_wait_ms_per_second =
+        static_cast<double>(telemetry.total_wait_ns - s_previous_net_wait_ns) /
+        1000000.0 / seconds;
+    s_previous_net_wait_sample = now;
+    s_previous_net_wait_ns = telemetry.total_wait_ns;
+  }
+  return fmt::format("{} | Net wait {:.1f} ms/s | Buffer {}", formatted_title,
+                     s_net_wait_ms_per_second, telemetry.buffer_size);
 }
-}
+} // namespace
 
 std::vector<std::string> Host_GetPreferredLocales() { return {}; }
 void Host_PPCSymbolsChanged() {}
 void Host_PPCBreakpointsChanged() {}
 bool Host_UIBlocksControllerState() { return false; }
-void Host_Message(HostMessageID id)
-{
+void Host_Message(HostMessageID id) {
   if (id == HostMessageID::WMUserStop && s_platform)
     s_platform->Stop();
 }
-void Host_UpdateTitle(const std::string&)
-{
+void Host_UpdateTitle(const std::string &) {
   if (!s_platform)
     return;
 
   std::string title = s_window_title;
   if (s_show_fps_in_title &&
       s_platform->GetWindowSystemInfo().type != WindowSystemType::Headless)
-    title = FormatWindowTitle(title, Core::System::GetInstance().GetPerfMetrics().GetFPS());
+    title = FormatWindowTitle(
+        title, Core::System::GetInstance().GetPerfMetrics().GetFPS());
   s_platform->SetTitle(title);
 }
 void Host_UpdateDisasmDialog() {}
 void Host_JitCacheInvalidation() {}
 void Host_JitProfileDataWiped() {}
 void Host_RequestRenderWindowSize(int, int) {}
-bool Host_RendererHasFocus() { return !s_platform || s_platform->IsWindowFocused(); }
+bool Host_RendererHasFocus() {
+  return !s_platform || s_platform->IsWindowFocused();
+}
 bool Host_RendererHasFullFocus() { return Host_RendererHasFocus(); }
-bool Host_RendererIsFullscreen() { return s_platform && s_platform->IsWindowFullscreen(); }
+bool Host_RendererIsFullscreen() {
+  return s_platform && s_platform->IsWindowFullscreen();
+}
 bool Host_TASInputHasFocus() { return false; }
 void Host_YieldToUI() {}
 void Host_TitleChanged() {}
-void Host_UpdateDiscordClientID(const std::string&) {}
-bool Host_UpdateDiscordPresenceRaw(const std::string&, const std::string&, const std::string&,
-                                   const std::string&, const std::string&, const std::string&,
-                                   std::int64_t, std::int64_t, int, int)
-{
+void Host_UpdateDiscordClientID(const std::string &) {}
+bool Host_UpdateDiscordPresenceRaw(const std::string &, const std::string &,
+                                   const std::string &, const std::string &,
+                                   const std::string &, const std::string &,
+                                   std::int64_t, std::int64_t, int, int) {
   return false;
 }
-std::unique_ptr<GBAHostInterface> Host_CreateGBAHost(std::weak_ptr<HW::GBA::Core>)
-{
+std::unique_ptr<GBAHostInterface>
+Host_CreateGBAHost(std::weak_ptr<HW::GBA::Core>) {
   return nullptr;
 }
 
-namespace moderngekko
-{
-struct Runtime::Impl
-{
+namespace moderngekko {
+struct Runtime::Impl {
   RuntimeConfig config;
   GameMetadata metadata;
   std::string title;
@@ -106,16 +141,27 @@ struct Runtime::Impl
   std::atomic<bool> running{false};
 };
 
-ModuleSource ModuleSource::DynamicPath(std::filesystem::path path)
-{
+namespace detail {
+void SetExternalUICommon(bool external) {
+  std::lock_guard lock(s_runtime_mutex);
+  s_external_ui_common = external;
+}
+
+void SetBootSessionData(std::unique_ptr<BootSessionData> boot_session_data) {
+  std::lock_guard lock(s_runtime_mutex);
+  s_boot_session_data = std::move(boot_session_data);
+}
+} // namespace detail
+
+ModuleSource ModuleSource::DynamicPath(std::filesystem::path path) {
   ModuleSource source;
   source.kind = Kind::DynamicPath;
   source.path = std::move(path);
   return source;
 }
 
-ModuleSource ModuleSource::AttachedDescriptor(const ModernGekkoModuleDesc* descriptor)
-{
+ModuleSource
+ModuleSource::AttachedDescriptor(const ModernGekkoModuleDesc *descriptor) {
   ModuleSource source;
   source.kind = Kind::AttachedDescriptor;
   source.descriptor = descriptor;
@@ -124,12 +170,13 @@ ModuleSource ModuleSource::AttachedDescriptor(const ModernGekkoModuleDesc* descr
 
 Runtime::Runtime(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
 
-RuntimeCreateResult Runtime::Create(RuntimeConfig config)
-{
+RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   std::lock_guard lock(s_runtime_mutex);
   if (s_runtime_active)
-    return {{}, RuntimeError{RuntimeErrorCode::AlreadyActive,
-                             "only one ModernGekko runtime may be active per process"}};
+    return {
+        {},
+        RuntimeError{RuntimeErrorCode::AlreadyActive,
+                     "only one ModernGekko runtime may be active per process"}};
 
   GameInspectResult inspected = InspectGame(config.game_root);
   if (!inspected)
@@ -141,23 +188,28 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config)
   ModuleLibrary validation_library;
   ModuleLoadResult module_result{};
   if (config.module.kind == ModuleSource::Kind::DynamicPath)
-    module_result = validation_library.Open(config.module.path.string(), requirements);
+    module_result =
+        validation_library.Open(config.module.path.string(), requirements);
   else if (config.module.kind == ModuleSource::Kind::AttachedDescriptor)
-    module_result = validation_library.Attach(config.module.descriptor, requirements);
+    module_result =
+        validation_library.Attach(config.module.descriptor, requirements);
   else if (!config.allow_interpreter)
-    return {{}, RuntimeError{RuntimeErrorCode::ModuleRequired,
-                             "no native module was supplied; use allow_interpreter explicitly"}};
+    return {
+        {},
+        RuntimeError{
+            RuntimeErrorCode::ModuleRequired,
+            "no native module was supplied; use allow_interpreter explicitly"}};
 
   if (config.module.kind != ModuleSource::Kind::None &&
-      module_result.status != ModuleLoadStatus::Ok)
-  {
-    if (!config.allow_interpreter)
-    {
+      module_result.status != ModuleLoadStatus::Ok) {
+    if (!config.allow_interpreter) {
       std::string message = "native module was rejected";
       if (module_result.status == ModuleLoadStatus::DescriptorRejected)
-        message +=
-            ": " + std::string(moderngekko_module_status_string(module_result.validation_status));
-      return {{}, RuntimeError{RuntimeErrorCode::ModuleRejected, std::move(message)}};
+        message += ": " + std::string(moderngekko_module_status_string(
+                              module_result.validation_status));
+      return {
+          {},
+          RuntimeError{RuntimeErrorCode::ModuleRejected, std::move(message)}};
     }
     config.module = {};
   }
@@ -166,32 +218,39 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config)
   auto impl = std::make_unique<Impl>();
   impl->config = std::move(config);
   impl->metadata = std::move(*inspected.metadata);
-  impl->title = impl->config.window_title.value_or("ModernGekko - " + impl->metadata.game_name +
-                                                   " [" + impl->metadata.disc_id + "]");
+  impl->title = impl->config.window_title.value_or(
+      "ModernGekko - " + impl->metadata.game_name + " [" +
+      impl->metadata.disc_id + "]");
 
-  UICommon::SetUserDirectory(impl->config.user_directory.string());
-  UICommon::Init();
-  impl->ui_initialized = true;
+  if (!s_external_ui_common) {
+    UICommon::SetUserDirectory(impl->config.user_directory.string());
+    UICommon::Init();
+    impl->ui_initialized = true;
+  }
 
   if (impl->config.headless)
     impl->platform = Platform::CreateHeadlessPlatform();
-#ifdef MODERNGEKKO_HAVE_COCOA
+#ifdef _WIN32
   else
-    impl->platform = Platform::CreateMacOSPlatform();
+    impl->platform = Platform::CreateWin32Platform();
+#endif
+#ifdef MODERNGEKKO_HAVE_COCOA
+  else impl->platform = Platform::CreateMacOSPlatform();
 #endif
 #ifdef HAVE_X11
-  else if (impl->config.window_system != WindowSystem::Wayland)
-    impl->platform = Platform::CreateX11Platform();
+  else if (impl->config.window_system != WindowSystem::Wayland) impl->platform =
+      Platform::CreateX11Platform();
 #endif
 #ifdef HAVE_WAYLAND
-  else if (impl->config.window_system != WindowSystem::X11)
-    impl->platform = Platform::CreateWaylandPlatform();
+  else if (impl->config.window_system != WindowSystem::X11) impl->platform =
+      Platform::CreateWaylandPlatform();
 #endif
-  if (!impl->platform || !impl->platform->Init())
-  {
-    UICommon::Shutdown();
-    return {{}, RuntimeError{RuntimeErrorCode::PlatformUnavailable,
-                             "the requested Dolphin host platform is unavailable"}};
+  if (!impl->platform || !impl->platform->Init()) {
+    if (impl->ui_initialized)
+      UICommon::Shutdown();
+    return {{},
+            RuntimeError{RuntimeErrorCode::PlatformUnavailable,
+                         "the requested Dolphin host platform is unavailable"}};
   }
 
   const WindowSystemInfo wsi = impl->platform->GetWindowSystemInfo();
@@ -205,33 +264,41 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config)
   else if (impl->config.headless)
     Config::SetBase(Config::MAIN_GFX_BACKEND, std::string("Null"));
   if (impl->config.graphics.internal_resolution_scale)
-    Config::SetBase(Config::GFX_EFB_SCALE, *impl->config.graphics.internal_resolution_scale);
-  const std::vector<std::string> audio_backends = AudioCommon::GetSoundBackends();
-  if (impl->config.headless)
-  {
+    Config::SetBase(Config::GFX_EFB_SCALE,
+                    *impl->config.graphics.internal_resolution_scale);
+  Config::SetBase(Config::GFX_SHADER_CACHE, true);
+  Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
+                  ShaderCompilationMode::AsynchronousUberShaders);
+  Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
+  const std::vector<std::string> audio_backends =
+      AudioCommon::GetSoundBackends();
+  if (impl->config.headless) {
     impl->config.audio.backend = BACKEND_NULLSOUND;
-  }
-  else if (impl->config.audio.backend.empty() ||
-           !std::ranges::contains(audio_backends, impl->config.audio.backend))
-  {
+  } else if (impl->config.audio.backend.empty() ||
+             !std::ranges::contains(audio_backends,
+                                    impl->config.audio.backend)) {
     impl->config.audio.backend = AudioCommon::GetDefaultSoundBackend();
-    if (impl->config.audio.backend == BACKEND_NULLSOUND)
-    {
-      const auto available = std::ranges::find_if(
-          audio_backends, [](const std::string& backend) { return backend != BACKEND_NULLSOUND; });
+    if (impl->config.audio.backend == BACKEND_NULLSOUND) {
+      const auto available =
+          std::ranges::find_if(audio_backends, [](const std::string &backend) {
+            return backend != BACKEND_NULLSOUND;
+          });
       if (available != audio_backends.end())
         impl->config.audio.backend = *available;
     }
   }
   Config::SetBase(Config::MAIN_AUDIO_BACKEND, impl->config.audio.backend);
-  Config::SetBase(Config::MAIN_INPUT_BACKGROUND_INPUT, impl->config.input.background_input);
+  Config::SetBase(Config::MAIN_INPUT_BACKGROUND_INPUT,
+                  impl->config.input.background_input);
 
-  auto& jit = Core::System::GetInstance().GetJitInterface();
+  auto &jit = Core::System::GetInstance().GetJitInterface();
   if (impl->config.module.kind == ModuleSource::Kind::DynamicPath)
-    jit.SetStaticRecompModuleSource(StaticRecompModuleSource::Dynamic(impl->config.module.path.string()));
+    jit.SetStaticRecompModuleSource(
+        StaticRecompModuleSource::Dynamic(impl->config.module.path.string()));
   else if (impl->config.module.kind == ModuleSource::Kind::AttachedDescriptor)
     jit.SetStaticRecompModuleSource(StaticRecompModuleSource::Attached(
-        reinterpret_cast<const StaticRecompModuleDesc*>(impl->config.module.descriptor)));
+        reinterpret_cast<const StaticRecompModuleDesc *>(
+            impl->config.module.descriptor)));
   else
     jit.SetStaticRecompModuleSource({});
 
@@ -242,11 +309,9 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config)
   return {std::unique_ptr<Runtime>(new Runtime(std::move(impl))), {}};
 }
 
-Runtime::~Runtime()
-{
+Runtime::~Runtime() {
   RequestStop();
-  if (m_impl->booted)
-  {
+  if (m_impl->booted) {
     Core::Stop(Core::System::GetInstance());
     Core::Shutdown(Core::System::GetInstance());
   }
@@ -262,37 +327,46 @@ Runtime::~Runtime()
   s_runtime_active = false;
 }
 
-RuntimeRunResult Runtime::Run()
-{
+RuntimeRunResult Runtime::Run() {
   if (m_impl->running.exchange(true))
     return {RuntimeExitReason::BootFailed,
-            RuntimeError{RuntimeErrorCode::InvalidState, "runtime is already running"}};
+            RuntimeError{RuntimeErrorCode::InvalidState,
+                         "runtime is already running"}};
 
-  auto boot = BootParameters::GenerateFromFile(m_impl->metadata.main_dol.string());
-  if (!boot)
+  std::unique_ptr<BootParameters> boot;
   {
-    m_impl->running = false;
-    return {RuntimeExitReason::BootFailed,
-            RuntimeError{RuntimeErrorCode::BootFailed, "Dolphin rejected the extracted disc"}};
+    std::lock_guard lock(s_runtime_mutex);
+    if (s_boot_session_data)
+      boot = BootParameters::GenerateFromFile(
+          m_impl->metadata.main_dol.string(), std::move(*s_boot_session_data));
+    else
+      boot =
+          BootParameters::GenerateFromFile(m_impl->metadata.main_dol.string());
+    s_boot_session_data.reset();
   }
-  m_impl->state_hook = Core::AddOnStateChangedCallback([this](Core::State state) {
-    if (state == Core::State::Uninitialized && m_impl->platform)
-      m_impl->platform->Stop();
-  });
-  if (!BootManager::BootCore(Core::System::GetInstance(), std::move(boot),
-                             m_impl->platform->GetWindowSystemInfo()))
-  {
+  if (!boot) {
     m_impl->running = false;
     return {RuntimeExitReason::BootFailed,
-            RuntimeError{RuntimeErrorCode::BootFailed, "Dolphin could not boot sys/main.dol"}};
+            RuntimeError{RuntimeErrorCode::BootFailed,
+                         "Dolphin rejected the extracted disc"}};
+  }
+  m_impl->state_hook =
+      Core::AddOnStateChangedCallback([this](Core::State state) {
+        if (state == Core::State::Uninitialized && m_impl->platform)
+          m_impl->platform->Stop();
+      });
+  if (!BootManager::BootCore(Core::System::GetInstance(), std::move(boot),
+                             m_impl->platform->GetWindowSystemInfo())) {
+    m_impl->running = false;
+    return {RuntimeExitReason::BootFailed,
+            RuntimeError{RuntimeErrorCode::BootFailed,
+                         "Dolphin could not boot sys/main.dol"}};
   }
   m_impl->booted = true;
   std::jthread title_thread;
-  if (!m_impl->config.headless && m_impl->config.show_fps_in_title)
-  {
+  if (!m_impl->config.headless && m_impl->config.show_fps_in_title) {
     title_thread = std::jthread([](std::stop_token stop_token) {
-      while (!stop_token.stop_requested())
-      {
+      while (!stop_token.stop_requested()) {
         Host_UpdateTitle({});
         for (int i = 0; i < 10 && !stop_token.stop_requested(); ++i)
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -311,29 +385,30 @@ RuntimeRunResult Runtime::Run()
   return {};
 }
 
-void Runtime::RequestStop()
-{
+void Runtime::RequestStop() {
   if (m_impl && m_impl->platform)
     m_impl->platform->RequestShutdown();
 }
 
-std::optional<RuntimeError> Runtime::Pause()
-{
+std::optional<RuntimeError> Runtime::Pause() {
   if (!m_impl->running)
-    return RuntimeError{RuntimeErrorCode::InvalidState, "runtime is not running"};
+    return RuntimeError{RuntimeErrorCode::InvalidState,
+                        "runtime is not running"};
   Core::SetState(Core::System::GetInstance(), Core::State::Paused);
   return {};
 }
 
-std::optional<RuntimeError> Runtime::Resume()
-{
+std::optional<RuntimeError> Runtime::Resume() {
   if (!m_impl->running)
-    return RuntimeError{RuntimeErrorCode::InvalidState, "runtime is not running"};
+    return RuntimeError{RuntimeErrorCode::InvalidState,
+                        "runtime is not running"};
   Core::SetState(Core::System::GetInstance(), Core::State::Running);
   return {};
 }
 
-const RuntimeConfig& Runtime::GetConfig() const { return m_impl->config; }
-const GameMetadata& Runtime::GetGameMetadata() const { return m_impl->metadata; }
-const std::string& Runtime::GetWindowTitle() const { return m_impl->title; }
-}  // namespace moderngekko
+const RuntimeConfig &Runtime::GetConfig() const { return m_impl->config; }
+const GameMetadata &Runtime::GetGameMetadata() const {
+  return m_impl->metadata;
+}
+const std::string &Runtime::GetWindowTitle() const { return m_impl->title; }
+} // namespace moderngekko
